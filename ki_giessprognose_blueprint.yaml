@@ -5,7 +5,8 @@ blueprint:
     und nutzt Google Gemini zur Analyse des Wasserverbrauchs-Trends über 20 Stunden, 
     um eine Gießprognose zu erstellen.
   domain: automation
-  source_url: [Platzhalter für deine zukünftige GitHub-URL]
+  # HIER WURDE DIE URL KORRIGIERT:
+  source_url: https://raw.githubusercontent.com/nublemeduble/Home-Assistant-Ki-Plant-Care/main/blueprints/automation/ki_giessprognose_blueprint.yaml
   input:
     gemini_provider:
       name: Gemini LLM Provider
@@ -167,3 +168,4 @@ action:
             target: !input tts_media_player
             data:
               message: "{{ gießprognose.response_text }}"
+              
