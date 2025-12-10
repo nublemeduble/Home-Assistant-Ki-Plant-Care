@@ -1,0 +1,169 @@
+blueprint:
+  name: 🌸 KI-Pflanzen-Gießprognose (Gemini)
+  description: >
+    Speichert stündlich Sensordaten (Temperatur, Luftfeuchtigkeit, Wasserstand in ml)
+    und nutzt Google Gemini zur Analyse des Wasserverbrauchs-Trends über 20 Stunden, 
+    um eine Gießprognose zu erstellen.
+  domain: automation
+  source_url: [Platzhalter für deine zukünftige GitHub-URL]
+  input:
+    gemini_provider:
+      name: Gemini LLM Provider
+      description: Wähle deinen Google Gemini LLM Provider.
+      selector:
+        entity:
+          domain: llmvision
+    temp_sensor:
+      name: Temperatursensor (°C)
+      description: Der Sensor, der die Umgebungstemperatur der Pflanze misst (z.B. ESPHome Sensor).
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    humidity_sensor:
+      name: Luftfeuchtigkeitssensor (%)
+      description: Der Sensor, der die Luftfeuchtigkeit der Pflanze misst (z.B. ESPHome Sensor).
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+    water_ml_sensor:
+      name: Gießwaage/Wasserstand (ml)
+      description: >
+        Der Hauptsensor, der das Gesamtvolumen des Wassers in Millilitern (ml) anzeigt 
+        (z.B. gewogene Topfmasse, umgerechnet in ml). **Wichtig: Muss ml anzeigen!**
+      selector:
+        entity:
+          domain: sensor
+    morning_analysis_time:
+      name: Morgen-Analysezeit
+      description: Uhrzeit für die erste tägliche Gießprognose (z.B. 09:00:00).
+      default: "09:00:00"
+      selector:
+        time:
+    evening_analysis_time:
+      name: Abend-Analysezeit
+      description: Uhrzeit für die zweite tägliche Gießprognose (z.B. 22:00:00). Anpassbar an den Lichtzyklus.
+      default: "22:00:00"
+      selector:
+        time:
+    notification_service:
+      name: Benachrichtigungsziel (Text)
+      description: Wähle den Dienst, über den du die Prognose erhalten möchtest (z.B. notify.mobile_app_deinhandy).
+      selector:
+        target:
+          entity:
+            domain: notify
+    tts_media_player:
+      name: TTS Media Player (Sprachausgabe)
+      description: Optionaler Media Player für die Sprachausgabe der Prognose.
+      selector:
+        entity:
+          domain: media_player
+
+# ---- Die eigentliche Automatisierungs-Logik ----
+mode: single
+trigger:
+  # Trigger 1: Stündlich für die Datenspeicherung
+  - platform: time_pattern
+    hours: /1
+    id: speichern
+  # Trigger 2: Morgens für die Analyse (Nutzt User-Input)
+  - platform: time
+    at: !input morning_analysis_time
+    id: analysieren_morgen
+  # Trigger 3: Abends für die Analyse (Nutzt User-Input)
+  - platform: time
+    at: !input evening_analysis_time
+    id: analysieren_abend
+
+action:
+  # --- 1. DATENVORBEREITUNG & SPEICHERUNG ---
+  - variables:
+      # Sensorwerte auf 1 Nachkommastelle runden und die ausgewählten Sensoren nutzen
+      temperatur: "{{ states(input_temp_sensor) | round(1) }}"
+      luftfeuchtigkeit: "{{ states(input_humidity_sensor) | round(1) }}"
+      aktueller_wasserstand_ml: "{{ states(input_water_ml_sensor) | round(1) }}"
+      
+  # Choose-Block 1: Speichern der Historie (Nur wenn 'speichern' triggert)
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: speichern
+        sequence:
+          # ACHTUNG: Die Helfer-Namen sind fix, da sie manuell angelegt werden müssen!
+          
+          # Speichert den Verlauf der Temperatur (Fenster: 20)
+          - data:
+              entity_id: input_text.temperatur_history
+              value: >
+                {% set hist = states('input_text.temperatur_history') %} {% if hist == '' or hist == 'unknown' %}
+                  {{ [temperatur] | join(',') }}
+                {% else %}
+                  {% set hist_list = hist.split(',') %}
+                  {% set hist_list = (hist_list + [temperatur])[-20:] %}
+                  {{ hist_list | join(',') }}
+                {% endif %}
+            service: input_text.set_value
+            
+          # Speichert den Verlauf der Luftfeuchtigkeit (Fenster: 20)
+          - data:
+              entity_id: input_text.luftfeuchtigkeit_history
+              value: >
+                {% set hist = states('input_text.luftfeuchtigkeit_history') %} {% if hist == '' or hist == 'unknown' %}
+                  {{ [luftfeuchtigkeit] | join(',') }}
+                {% else %}
+                  {% set hist_list = hist.split(',') %}
+                  {% set hist_list = (hist_list + [luftfeuchtigkeit])[-20:] %}
+                  {{ hist_list | join(',') }}
+                {% endif %}
+            service: input_text.set_value
+            
+          # Speichert den Verlauf des ml-Wertes der Gießwaage (Fenster: 20)
+          - data:
+              entity_id: input_text.wasser_history
+              value: >
+                {% set hist = states('input_text.wasser_history') %} {% if hist == '' or hist == 'unknown' %}
+                  {{ [aktueller_wasserstand_ml] | join(',') }}
+                {% else %}
+                  {% set hist_list = hist.split(',') %}
+                  {% set hist_list = (hist_list + [aktueller_wasserstand_ml])[-20:] %}
+                  {{ hist_list | join(',') }}
+                {% endif %}
+            service: input_text.set_value
+
+  # --- 2. ANALYSE & BENACHRICHTIGUNG ---
+  - choose:
+      - conditions:
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: analysieren_morgen
+              - condition: trigger
+                id: analysieren_abend
+        sequence:
+          - response_variable: gießprognose
+            service: llmvision.data_analyzer
+            data:
+              provider: !input gemini_provider
+              model: gemini-1.5
+              message: >
+                Analysiere die Sensordaten meiner Pflanze und erstelle eine
+                Gießprognose. Der wichtigste Wert ist die Abnahme des Wasserstandes, gemessen durch eine Waage und in Milliliter (ml) umgerechnet.
+                Aktueller Wasserstand (letzte 20 Stunden in ml): {{ states('input_text.wasser_history') }}
+                Temperatur (letzte 20 Stunden): {{ states('input_text.temperatur_history') }}
+                Luftfeuchtigkeit (letzte 20 Stunden): {{ states('input_text.luftfeuchtigkeit_history') }}
+                Berücksichtige den stetig sinkenden Trend dieser Werte und gib eine kurze Empfehlung, ob und wie viel gegossen werden soll.
+              max_tokens: 150
+              remember: true
+              
+          - service: notify.send_message
+            target: !input notification_service
+            data:
+              message: "{{ gießprognose.response_text }}"
+
+          # TTS (Text-to-Speech)
+          - service: tts.speak
+            target: !input tts_media_player
+            data:
+              message: "{{ gießprognose.response_text }}"
